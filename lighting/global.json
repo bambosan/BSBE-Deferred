@@ -1,0 +1,6 @@
+{
+    "format_version": [1, 0, 0], 
+    "directional_lights": {
+      "orbital_offset_degrees": 30.0
+    }
+  }
