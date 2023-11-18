@@ -1,0 +1,7 @@
+{
+    "pass": {
+        "ForwardPBRTransparent": ["FORWARD_PBR_TRANSPARENT"],
+        "ForwardPBRAlphaTest": ["FORWARD_PBR_ALPHA_TEST"],
+        "ForwardPBROpaque": ["FORWARD_PBR_OPAQUE"]
+    }
+}

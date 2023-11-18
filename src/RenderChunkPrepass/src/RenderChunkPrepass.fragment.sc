@@ -33,13 +33,13 @@ uniform vec4 LightDiffuseColorAndIlluminance;
 uniform vec4 ViewPositionAndTime;
 uniform vec4 RenderChunkFogAlpha;
 
-SAMPLER2D(s_MatTexture, 0);
-SAMPLER2D(s_SeasonsTexture, 1);
-SAMPLER2D(s_LightMapTexture, 2);
+SAMPLER2D(s_MatTexture, 1);
+SAMPLER2D(s_SeasonsTexture, 0);
+SAMPLER2D(s_LightMapTexture, 3);
 
 #if defined(GEOMETRY_PREPASS) || defined(GEOMETRY_PREPASS_ALPHA_TEST)
 
-BUFFER_RO(s_PBRData, PBRTextureData, 3);
+BUFFER_RO(s_PBRData, PBRTextureData, 2);
 
 vec2 octWrap(vec2 v) {
     return (1.0 - abs(v.yx)) * ((2.0 * step(0.0, v)) - 1.0);
@@ -132,12 +132,16 @@ vec4 applySeasons(vec3 vertexColor, float vertexAlpha, vec4 diffuse) {
 
 void main() {
     vec4 diffuse = texture2D(s_MatTexture, v_texcoord0);
-
+    float tpbr = 0.0;
 #if defined(ALPHA_TEST) || defined(GEOMETRY_PREPASS_ALPHA_TEST) || defined(DEPTH_ONLY)
     const float ALPHA_THRESHOLD = 0.5;
     if (diffuse.a < ALPHA_THRESHOLD) {
         discard;
     }
+#endif
+
+#if TRANSPARENT_PBR
+    tpbr = 1.0;
 #endif
 
 #if defined(SEASONS) && !defined(TRANSPARENT) && !defined(TRANSPARENT_PBR)
@@ -191,10 +195,6 @@ void main() {
     tbn = transpose(tbn);
     vec3 viewSpaceNormal = mul(tbn, tangentNormal).xyz;
 
-    // computeLighting_RenderChunk_SplitLightMapValues
-    vec3 blockLight = texture2D(s_LightMapTexture, vec2(v_lightmapUV.x, 0.0)).rgb;
-    vec3 skyLight = texture2D(s_LightMapTexture, vec2(0.0, v_lightmapUV.y)).rgb;
-
     //RenderChunkGeometryPrepass
     //applyPrepassSurfaceToGBuffer
     gl_FragData[0].rgb = diffuse.rgb;
@@ -218,22 +218,12 @@ void main() {
     gl_FragData[2] = vec4(emissive, v_lightmapUV.x, v_lightmapUV.y, linearRoughness);
 
 #else
-
     #if defined(DEPTH_ONLY) || defined(DEPTH_ONLY_OPAQUE)
         diffuse = vec4(1.0, 1.0, 1.0, 1.0);
     #endif
-
-    #if defined(TRANSPARENT_PBR)
-        //computeLighting_RenderChunk_Split
-        vec3 blockLight = texture2D(s_LightMapTexture, min(vec2(v_lightmapUV.x, 0.09375), 1.0)).xyz;
-        vec3 skyLight = texture2D(s_LightMapTexture, min(vec2(v_lightmapUV.y, 0.03125), 1.0)).xyz;
-        //diffuse.rgb *= saturate(blockLight + skyLight);
-    #endif
-
     gl_FragData[0].rgb = mix(diffuse.rgb, FogColor.rgb, v_fog.a);
     gl_FragData[0].a = diffuse.a;
     gl_FragData[1] = vec4(0.0, 0.0, 0.0, 0.0);
     gl_FragData[2] = vec4(0.0, 0.0, 0.0, 0.0);
-
 #endif
 }

@@ -3,17 +3,17 @@
     "header": {
         "name": "BSBE Deferred Test",
         "description": "A shader for Minecraft: Bedrock Edition",
-        "uuid": "bc26de80-5c8f-4244-aa18-52bc00a82a98",
-        "version": [1, 0, 0],
+        "uuid": "91fc9799-dfac-46d7-8c1b-482de2040663",
+        "version": [1, 0, 1],
         "min_engine_version": [1, 20, 40]
     },
     "modules": [
         {
             "description": "A shader for Minecraft: Bedrock Edition",
             "type": "resources",
-            "uuid": "0a3fbf66-dcdf-46bf-ac6c-c4ffee32e6fb",
-            "version": [1, 0, 0]
+            "uuid": "077612db-c0be-48f3-be09-3874692446e5",
+            "version": [1, 0, 1]
         }
     ],
-    "capabilities": ["raytraced"]
+    "capabilities": ["pbr"]
 }
