@@ -1,18 +1,18 @@
 {
     "format_version": 2,
     "header": {
-        "name": "BSBE Deferred Test",
-        "description": "A shader for Minecraft: Bedrock Edition",
+        "name": "BSBE Deferred Beta 1.1.0",
+        "description": "A custom shader for Technical Deferred Preview in Minecraft: Bedrock Edition\nBy: @bamb0san",
         "uuid": "91fc9799-dfac-46d7-8c1b-482de2040663",
-        "version": [1, 0, 1],
+        "version": [1, 1, 0],
         "min_engine_version": [1, 20, 30]
     },
     "modules": [
         {
-            "description": "A shader for Minecraft: Bedrock Edition",
+            "description": "A custom shader for Technical Deferred Preview in Minecraft: Bedrock Edition\nBy: @bamb0san",
             "type": "resources",
             "uuid": "077612db-c0be-48f3-be09-3874692446e5",
-            "version": [1, 0, 1]
+            "version": [1, 1, 0]
         }
     ],
     "capabilities": ["pbr"]
