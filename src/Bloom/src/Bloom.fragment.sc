@@ -1,9 +1,9 @@
 $input v_texcoord0
 #include <bgfx_shader.sh>
 
-SAMPLER2D(s_HDRi, 2);
-SAMPLER2D(s_BlurPyramidTexture, 0);
-SAMPLER2D(s_DepthTexture, 1);
+SAMPLER2D(s_HDRi, 0);
+SAMPLER2D(s_BlurPyramidTexture, 1);
+SAMPLER2D(s_DepthTexture, 3);
 
 float luminance(vec3 clr) {
     return dot(clr, vec3(0.2126, 0.7152, 0.0722));

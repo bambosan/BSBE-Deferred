@@ -2,7 +2,6 @@ $input v_texcoord0
 #include <bgfx_shader.sh>
 
 SAMPLER2D(s_ColorTexture, 1);
-SAMPLER2D(s_RasterizedColor, 6);
 
 float getLL(vec3 color){
     return dot(color, vec3(0.2125, 0.7154, 0.0721));

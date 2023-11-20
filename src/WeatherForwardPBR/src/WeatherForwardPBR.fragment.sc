@@ -69,6 +69,7 @@ float getMie1(vec3 lPos, vec3 pos){
 void main() {
 	vec4 diffuse = texture2D(s_WeatherTexture, v_texcoord0);
     vec4 occlusionLuminanceAndHeightThreshold = texture2D(s_OcclusionTexture, v_occlusionUV);
+        diffuse.rgb = pow(diffuse.rgb, vec3_splat(2.2));
 
     float occlusionLuminance = getOcclusionLuminance(occlusionLuminanceAndHeightThreshold);
     float occlusionHeightThreshold = getOcclusionHeight(occlusionLuminanceAndHeightThreshold);
@@ -80,27 +81,20 @@ void main() {
         float uvX = occlusionLuminance - (mixAmount * occlusionLuminance);
         vec2 lightingUV = vec2(uvX, 1.0);
 
-        diffuse.rgb = pow(diffuse.rgb, vec3_splat(2.2));
-        
         #if FORWARD_PBR_TRANSPARENT
-        vec3 nWP = normalize(v_worldPos);
-        vec3 sunP = normalize(SunDir.xyz);
-        float sunH = saturate(sunP.y);
-        vec3 moonP = normalize(MoonDir.xyz);
-        float moonH = saturate(moonP.y);
+            vec3 nWP = normalize(v_worldPos);
+            vec3 sunP = normalize(SunDir.xyz);
+            float sunH = saturate(sunP.y);
+            vec3 moonP = normalize(MoonDir.xyz);
+            float moonH = saturate(moonP.y);
 
-        vec3 linFogC = pow(FogColor.rgb, vec3_splat(2.2));
-        // ambient - diffuse
-        diffuse.rgb *= (vec3_splat(0.01) + vec3(1.0, 0.6, 0.3) * ((lightingUV.x * lightingUV.x) * 0.2 + pow(lightingUV.x, 16.0) * 5.0));
-        // near fog
-        diffuse.rgb = mix(diffuse.rgb, linFogC, 1.0 - exp(-saturate(length(-v_worldPos.xyz) * 0.01) * 0.1 * CameraLightIntensity.y));
-
-        vec3 bFogC = mix(linFogC, linFogC, exp(-saturate(nWP.y) * 2.0) * 0.1) + (linFogC * getMie(sunP, nWP) * 4.0) + (linFogC * getMie(moonP, nWP));
-        diffuse.rgb = mix(diffuse.rgb, bFogC, v_fog.a);
-        diffuse.rgb *= vec3(2.0, 1.9, 1.8);
-        diffuse.rgb *= (1.0 - (sunH + moonH) * 0.8);
+            vec3 linFogC = pow(FogColor.rgb, vec3_splat(2.2));
+            diffuse.rgb *= (vec3_splat(0.01) + vec3(1.0, 0.6, 0.3) * ((lightingUV.x * lightingUV.x) * 0.2 + pow(lightingUV.x, 16.0) * 6.0));
+            diffuse.rgb = mix(diffuse.rgb, linFogC, 1.0 - exp(-saturate(length(-v_worldPos.xyz) * 0.01) * 0.1 * CameraLightIntensity.y));
+            diffuse.rgb = mix(diffuse.rgb, linFogC, v_fog.a + (linFogC * getMie(sunP, nWP) * 4.0) + (linFogC * getMie(moonP, nWP)));
+            diffuse.rgb *= vec3(2.0, 1.9, 1.8) * (1.0 - (sunH + moonH) * 0.8);
         #endif
     }
     diffuse.rgb = max(vec3_splat(0.0), diffuse.rgb * 1000.0);
-    gl_FragColor = diffuse;
+    gl_FragColor = vec4(diffuse.rgb, diffuse.a * 0.7);
 }

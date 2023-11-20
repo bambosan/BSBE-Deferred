@@ -33,13 +33,13 @@ uniform vec4 LightDiffuseColorAndIlluminance;
 uniform vec4 ViewPositionAndTime;
 uniform vec4 RenderChunkFogAlpha;
 
-SAMPLER2D(s_MatTexture, 1);
-SAMPLER2D(s_SeasonsTexture, 0);
-SAMPLER2D(s_LightMapTexture, 3);
+SAMPLER2D(s_MatTexture, 0);
+SAMPLER2D(s_SeasonsTexture, 1);
+SAMPLER2D(s_LightMapTexture, 2);
 
 #if defined(GEOMETRY_PREPASS) || defined(GEOMETRY_PREPASS_ALPHA_TEST)
 
-BUFFER_RO(s_PBRData, PBRTextureData, 2);
+BUFFER_RO(s_PBRData, PBRTextureData, 3);
 
 vec2 octWrap(vec2 v) {
     return (1.0 - abs(v.yx)) * ((2.0 * step(0.0, v)) - 1.0);
@@ -195,10 +195,8 @@ void main() {
     tbn = transpose(tbn);
     vec3 viewSpaceNormal = mul(tbn, tangentNormal).xyz;
 
-    //RenderChunkGeometryPrepass
-    //applyPrepassSurfaceToGBuffer
     gl_FragData[0].rgb = diffuse.rgb;
-    gl_FragData[0].a = subSurfaceScatter;
+    gl_FragData[0].a = 0.0;
 
     vec3 viewNormal = normalize(viewSpaceNormal).xyz;
     gl_FragData[1].xy = ndirToOctSnorm(viewNormal);
@@ -215,7 +213,7 @@ void main() {
     prevScreenSpacePos = prevScreenSpacePos * 0.5 + 0.5;
 
     gl_FragData[1].zw = screenSpacePos.xy - prevScreenSpacePos.xy;
-    gl_FragData[2] = vec4(emissive, v_lightmapUV.x, v_lightmapUV.y, linearRoughness);
+    gl_FragData[2] = vec4(subSurfaceScatter, v_lightmapUV.x, v_lightmapUV.y, 1.0);
 
 #else
     #if defined(DEPTH_ONLY) || defined(DEPTH_ONLY_OPAQUE)

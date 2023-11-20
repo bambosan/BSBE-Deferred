@@ -1,28 +1,17 @@
-$input v_projPosition, v_texcoord0, v_time
-
+$input v_projPosition, v_texcoord0
 #include <bgfx_shader.sh>
 #include <bgfx_compute.sh>
 
-#if !defined(FALLBACK) && (BGFX_SHADER_LANGUAGE_GLSL >= 310 || BGFX_SHADER_LANGUAGE_HLSL >= 500 || BGFX_SHADER_LANGUAGE_PSSL || BGFX_SHADER_LANGUAGE_SPIRV || BGFX_SHADER_LANGUAGE_METAL)
-
+#if !defined(FALLBACK) && (BGFX_SHADER_LANGUAGE_HLSL >= 500 || BGFX_SHADER_LANGUAGE_PSSL || BGFX_SHADER_LANGUAGE_SPIRV || BGFX_SHADER_LANGUAGE_METAL)
+uniform vec4 PrepassUVOffset;
 uniform vec4 SunDir;
 uniform vec4 MoonDir;
 uniform vec4 ShadowParams;
-uniform vec4 ShadowBias;
-uniform vec4 ShadowSlopeBias;
 uniform vec4 CascadeShadowResolutions;
 uniform vec4 DirectionalLightToggleAndCountAndMaxDistance;
-uniform vec4 PrepassUVOffset;
 uniform vec4 FogColor;
 uniform vec4 FogAndDistanceControl;
 uniform vec4 CameraLightIntensity;
-
-SAMPLER2D(s_ColorMetalness, 2);
-SAMPLER2D(s_SceneDepth, 10);
-SAMPLER2D(s_Normal, 7);
-SAMPLER2D(s_EmissiveAmbientLinearRoughness, 4);
-SAMPLER2DARRAYSHADOW(s_ShadowCascades0, 11);
-SAMPLER2DARRAYSHADOW(s_ShadowCascades1, 12);
 
 struct LightSourceWorldInfo {
     vec4 worldSpaceDirection;
@@ -38,18 +27,42 @@ struct LightSourceWorldInfo {
     int pad1;
 };
 
-BUFFER_RO(s_DirectionalLightSources, LightSourceWorldInfo, 3);
+struct BSBELight {
+    vec3 linFogC;
+    vec3 sunC;
+    vec3 moonC;
+    vec3 zenC;
+    vec3 horC;
+    float lmCY;
+    float lmCX;
+    float lVis;
+    float sunVis;
+    float moonVis;
+    float rain;
+    float fTime;
+};
 
-float Bayer2(vec2 a){
-    a = floor(a);
-    return fract(dot(a, vec2(0.5, a.y * 0.75)));
+struct BSBEVec {
+    vec3 vPos;
+    vec3 sunPNor;
+    vec3 moonPNor;
+    vec3 shLPNor;
+    vec3 wPos;
+    vec3 wPosNor;
+    vec3 wNor;
+};
+
+SAMPLER2D(s_ColorMetalness, 1);
+SAMPLER2D(s_SceneDepth, 0);
+SAMPLER2D(s_Normal, 2);
+SAMPLER2D(s_EmissiveAmbientLinearRoughness, 3);
+SAMPLER2DARRAYSHADOW(s_ShadowCascades0, 7);
+SAMPLER2DARRAYSHADOW(s_ShadowCascades1, 9);
+BUFFER_RO(s_DirectionalLightSources, LightSourceWorldInfo, 8);
+
+float interleavedGradientNoise(vec2 uv){
+    return fract(52.9829189 * fract(uv.x * 0.06711056 + uv.y * 0.00583715));
 }
-
-#define Bayer4(a) (Bayer2(0.5 * (a)) * 0.25 + Bayer2(a))
-#define Bayer8(a) (Bayer4(0.5 * (a)) * 0.25 + Bayer2(a))
-#define Bayer16(a) (Bayer8(0.5 * (a)) * 0.25 + Bayer2(a))
-#define Bayer32(a) (Bayer16(0.5 * (a)) * 0.25 + Bayer2(a))
-#define Bayer64(a) (Bayer32(0.5 * (a)) * 0.25 + Bayer2(a))
 
 float getLL(vec3 color){
     return dot(color, vec3(0.2125, 0.7154, 0.0721));
@@ -123,13 +136,6 @@ float fbm(vec2 pos, float pDens, float fTime){
     return saturate(1.0 - sum);
 }
 
-vec4 projToView(vec4 p, mat4 inverseProj){
-    p = vec4(p.x * inverseProj[0][0], p.y * inverseProj[1][1], p.w * inverseProj[2][3],
-        p.z * inverseProj[3][2] + p.w * inverseProj[3][3]);
-    p /= p.w;
-    return p;
-}
-
 vec2 octWrap(vec2 v){
     return (1.0 - abs(v.yx)) * ((2.0 * step(0.0, v)) - 1.0);
 }
@@ -144,123 +150,162 @@ float cdist(vec2 coord){
     return saturate(1.0 - max(abs(coord.x - 0.5), abs(coord.y - 0.5)) * 2.0);
 }
 
-float calculateFogIntensity(float cameraDepth, float maxDistance, float fogStart, float fogEnd){
+float calcBFog(float cameraDepth, float maxDistance, float fogStart, float fogEnd){
     float dist = cameraDepth / maxDistance;
     return saturate((dist - fogStart) / (fogEnd - fogStart));
+}
+
+vec4 projToView(vec4 p, mat4 inverseProj){
+    p = vec4(p.x * inverseProj[0][0], p.y * inverseProj[1][1], p.w * inverseProj[2][3],
+        p.z * inverseProj[3][2] + p.w * inverseProj[3][3]);
+    p /= p.w;
+    return p;
+}
+
+int getCsIndex(LightSourceWorldInfo ld, out vec4 shPos, vec3 wPos){
+    mat4 csProj[4] = { ld.shadowProj0, ld.shadowProj1, ld.shadowProj2, ld.shadowProj3 };
+    for(int i = 0; i < 4; i++){
+        shPos = mul(csProj[i], vec4(wPos, 1.0));
+        shPos /= shPos.w;
+        if(length(clamp(shPos.xyz, -1.0, 1.0) - shPos.xyz) == 0.0) return i;
+    }
+    return -1;
+}
+
+float filteredSh(vec3 shPos, int csNum, int csIdx, int bstep, float bofs){
+    vec2 pDO[16] = {
+        vec2(1.0, 1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, -1.0),
+        vec2(2.0, 0.0), vec2(0.0, 2.0), vec2(-2.0, 0.0), vec2(0.0, -2.0),
+        vec2(3.0, 1.0), vec2(1.0, 3.0), vec2(-1.0, 3.0), vec2(3.0, -1.0),
+        vec2(-3.0, 1.0), vec2(-1.0, -3.0), vec2(1.0, -3.0), vec2(-3.0, -1.0)
+    };
+    float fSmap = 0.0;
+    for(int i = 0; i < bstep; i++){
+        vec2 osp = (shPos.xy + pDO[i] * bofs) * CascadeShadowResolutions[csIdx];
+        if(csNum == 0){
+            fSmap += shadow2DArray(s_ShadowCascades0, vec4(osp, float(csIdx), shPos.z)).r;
+        } else {
+            fSmap += shadow2DArray(s_ShadowCascades1, vec4(osp, float(csIdx), shPos.z)).r;
+        }
+    }
+    return fSmap;
+}
+
+float shLight(LightSourceWorldInfo ld, BSBEVec bvd, BSBELight bld, bool sss){
+    vec4 shPos;
+    int csIdx = getCsIndex(ld, shPos, bvd.wPos);
+    float fSmap = 1.0;
+    if(csIdx != -1){
+        float bias = 0.0001 + 0.00042 * saturate(tan(acos(max(dot(bvd.wNor, normalize(ld.shadowDirection.xyz)), 0.0))));
+        shPos.xy = vec2(shPos.x, -shPos.y) * 0.5 + 0.5;
+        shPos.z -= bias / shPos.w;
+        fSmap = filteredSh(shPos.xyz, ld.shadowCascadeNumber, csIdx, (sss ? 16 : 4), (sss ? 0.001 : 0.0001));
+        fSmap = saturate(fSmap * (sss ? 0.0625 : 0.24 * saturate(dot(bvd.wNor, normalize(ld.worldSpaceDirection.xyz)))));    
+    }
+    fSmap = mix(fSmap, saturate(dot(bvd.wNor, bvd.shLPNor)), smoothstep(max(0.0, ShadowParams.y - 8.0), ShadowParams.y, -bvd.vPos.z));
+    fSmap = saturate(fSmap - bld.rain);
+    return fSmap;
+}
+
+vec3 ambDiff(BSBELight bld){
+    return (vec3_splat(0.01) + (cSatur(bld.zenC, 0.3) * (2.0 - bld.rain * 1.5) * bld.lmCY) + vec3(1.0, 0.6, 0.3) * ((bld.lmCX * bld.lmCX) * 0.2 + pow(bld.lmCX, 16.0) * 5.0) + (bld.moonC + bld.sunC) * bld.lVis * 2.0);
+}
+
+vec3 nearFog(vec3 backg, BSBELight bld, BSBEVec bvd){
+    return mix(backg, bld.zenC * (3.0 - bld.sunVis * 0.5), 1.0 - exp(-saturate(length(-bvd.wPos) * 0.01) * max(0.05 - bld.sunVis * 0.02, bld.rain * 0.1) * CameraLightIntensity.y));
+}
+
+vec3 borderFog(BSBELight bld, BSBEVec bvd){
+    return mix(bld.zenC, bld.horC, exp(-saturate(bvd.wPosNor.y) * 2.0) * 0.1) + (bld.sunC * getMie(bvd.sunPNor, bvd.wPosNor) * 4.0) + (bld.moonC * getMie(bvd.moonPNor, bvd.wPosNor));
+}
+
+void smVis(inout vec3 backg, BSBELight bld, BSBEVec bvd){
+    backg += normalize(bld.sunC) * smoothstep(0.997, 0.999, dot(bvd.wPosNor, bvd.sunPNor)) * 5.0 * saturate(bvd.wPosNor.y);
+    backg += normalize(bld.moonC) * smoothstep(0.996, 0.998, dot(bvd.wPosNor, bvd.moonPNor)) * 5.0 * saturate(bvd.wPosNor.y);
+}
+
+void cloudMap(inout vec3 backg, BSBELight bld, BSBEVec bvd, float dithering){
+    vec2 cloudP = (bvd.wPosNor.xz / bvd.wPosNor.y) * 0.7;
+        cloudP -= cloudP * dithering;
+    float sDens = 1.8;
+    vec3 cloDirC = bld.horC * (1.0 + (getMie1(bvd.sunPNor, bvd.wPosNor) + getMie1(bvd.moonPNor, bvd.wPosNor)));
+    vec3 cloAmbC = cSatur(bld.zenC, 0.7);
+    for(int i = 0; i < 10; i++){
+        float fmap = fbm(cloudP, sDens, bld.fTime);
+        cloDirC = mix(cloDirC, cloAmbC, 0.2);
+        backg = mix(backg, cloDirC, fmap * smoothstep(0.0, 0.5, bvd.wPosNor.y));
+        sDens += (i <= 6) ? -0.1 : 0.1;
+        cloudP -= cloudP * 0.045;
+    }
+}
+
+void ssGR(inout vec3 backg, BSBELight bld, BSBEVec bvd, vec2 uv, float dithering){
+    vec4 lProj = mul(u_proj, vec4(mul(u_view, vec4(bvd.shLPNor, 1.0)).xyz, 1.0));
+        lProj /= lProj.w;
+        lProj.y *= -1.0;
+    vec2 sunScr = (lProj.xy / lProj.z) * 0.5 + 0.5;
+    vec2 rayDir = (sunScr - uv) * 0.05;
+    vec2 rayOri = uv + rayDir * dithering;
+    float godRays = 0.0;
+    for(int i = 0; i < 16; i++){
+        godRays += step(1.0, texture2D(s_SceneDepth, rayOri).r) * cdist(rayOri) * 0.025;
+        rayOri += rayDir;
+    }
+    backg += bld.sunC * godRays * getMie1(bvd.sunPNor, bvd.wPosNor);
+    backg += bld.moonC * 2.0 * godRays * getMie1(bvd.moonPNor, bvd.wPosNor);
 }
 #endif
 
 void main(){
-#if !defined(FALLBACK) && (BGFX_SHADER_LANGUAGE_GLSL >= 310 || BGFX_SHADER_LANGUAGE_HLSL >= 500 || BGFX_SHADER_LANGUAGE_PSSL || BGFX_SHADER_LANGUAGE_SPIRV || BGFX_SHADER_LANGUAGE_METAL)
+#if !defined(FALLBACK) && (BGFX_SHADER_LANGUAGE_HLSL >= 500 || BGFX_SHADER_LANGUAGE_PSSL || BGFX_SHADER_LANGUAGE_SPIRV || BGFX_SHADER_LANGUAGE_METAL)
     vec2 uv = vec2(v_texcoord0.x * PrepassUVOffset.x + PrepassUVOffset.y, v_texcoord0.y);
     float sDepth = texture2D(s_SceneDepth, uv).r;
-    vec4 vPos = projToView(vec4(v_projPosition.xy, sDepth, 1.0), u_invProj);
-    vec4 wPos = mul(u_invView, vec4(vPos.xyz, 1.0));
-    vec3 nWP = normalize(wPos.xyz);
-    vec3 wNor = octToNdirSnorm(texture2D(s_Normal, uv).xy);
     vec4 cm = texture2D(s_ColorMetalness, uv);
     vec4 ear = texture2D(s_EmissiveAmbientLinearRoughness, uv);
     vec3 outCol = pow(cm.rgb, vec3_splat(2.2));
 
-    float lVis = 1.0;
-    float rain = 1.0 - smoothstep(0.3, 0.7, FogAndDistanceControl.x);
+    BSBEVec bvd;
+        bvd.vPos = projToView(vec4(v_projPosition.xy, sDepth, 1.0), u_invProj).xyz;
+        bvd.wPos = mul(u_invView, vec4(bvd.vPos, 1.0)).xyz;
+        bvd.wPosNor = normalize(bvd.wPos);
+        bvd.wNor = octToNdirSnorm(texture2D(s_Normal, uv).xy);
+        bvd.sunPNor = normalize(SunDir.xyz);
+        bvd.moonPNor = normalize(MoonDir.xyz);
+        bvd.shLPNor = bvd.sunPNor.y > 0.0 ? bvd.sunPNor : bvd.moonPNor;
+
+    BSBELight bld;
+        bld.sunVis = saturate(bvd.sunPNor.y);
+        bld.moonVis = saturate(bvd.moonPNor.y);
+        bld.rain = saturate(1.0 - smoothstep(0.3, 0.7, FogAndDistanceControl.x));
+        bld.linFogC = pow(FogColor.rgb, vec3_splat(2.2));
+        bld.sunC = mix(vec3((1.0 - bld.sunVis) * 0.5 + bld.sunVis, bld.sunVis, bld.sunVis * bld.sunVis) * bld.sunVis, bld.linFogC, bld.rain);
+        bld.moonC = mix(vec3(bld.moonVis * 0.03, bld.moonVis * 0.06, bld.moonVis * 0.1) * bld.moonVis, bld.linFogC, bld.rain);
+        bld.horC = cSatur(bld.moonC + bld.sunC, 0.5);
+        bld.zenC = mix(vec3(0.0, bld.sunVis * 0.05 + 0.001, bld.sunVis * 0.5 + 0.004), bld.linFogC, bld.rain);
+        bld.lmCX = ear.g;
+        bld.lmCY = ear.b;
+        bld.lVis = 1.0;
+        bld.fTime = mod((bvd.sunPNor.x - bvd.sunPNor.y * 0.5) * 3600.0, 3600.0) * 0.1;
 
     if(int(DirectionalLightToggleAndCountAndMaxDistance.y) != 0){
         LightSourceWorldInfo ld = s_DirectionalLightSources[0];
-        vec4 shP;
-        int csIdx = -1;
-        mat4 csProj[4] = { ld.shadowProj0, ld.shadowProj1, ld.shadowProj2, ld.shadowProj3 };
-        for(int i = 0; i < 4; i++){
-            shP = mul(csProj[i], vec4(wPos.xyz, 1.0));
-            shP /= shP.w;
-            if(length(clamp(shP.xyz, -1.0, 1.0) - shP.xyz) == 0.0){
-                csIdx = i;
-                break;
-            }
-        }
-
-        bool sss = cm.a < 1.0;
-        if(csIdx != -1){
-            float bias = 0.0001 + 0.00042 * saturate(tan(acos(max(dot(wNor, normalize(ld.shadowDirection.xyz)), 0.0))));
-            shP.z -= bias / shP.w;
-            shP.y *= -1.0;
-            shP.xy = shP.xy * 0.5 + 0.5;
-
-            vec2 pDO[16] = {
-                vec2(1.0, 1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, -1.0),
-                vec2(2.0, 0.0), vec2(0.0, 2.0), vec2(-2.0, 0.0), vec2(0.0, -2.0),
-                vec2(3.0, 1.0), vec2(1.0, 3.0), vec2(-1.0, 3.0), vec2(3.0, -1.0),
-                vec2(-3.0, 1.0), vec2(-1.0, -3.0), vec2(1.0, -3.0), vec2(-3.0, -1.0)
-            };
-
-            float fSmap = 0.0;
-            for(int i = 0; i < (sss ? 16 : 4); i++){
-                vec2 osp = (shP.xy + pDO[i] * (sss ? 0.001 : 0.0001)) * CascadeShadowResolutions[csIdx];
-                if(ld.shadowCascadeNumber == 0){
-                    fSmap += shadow2DArray(s_ShadowCascades0, vec4(osp, float(csIdx), shP.z)).r;
-                } else if(ld.shadowCascadeNumber == 1){
-                    fSmap += shadow2DArray(s_ShadowCascades1, vec4(osp, float(csIdx), shP.z)).r;
-                }
-            }
-            float ndl = saturate(dot(wNor, normalize(ld.worldSpaceDirection.xyz)));
-            lVis = saturate(fSmap * (sss ? 0.0625 : 0.24 * ndl));
-            lVis = mix(lVis, ndl, smoothstep(max(0.0, ShadowParams.y - 8.0), ShadowParams.y, -vPos.z));
-            lVis = saturate(lVis - rain);
-        }
-
-        vec3 sunP = normalize(SunDir.xyz);
-        float sunH = saturate(sunP.y);
-        vec3 moonP = normalize(MoonDir.xyz);
-        float moonH = saturate(moonP.y);
-
-        vec3 linFogC = pow(FogColor.rgb, vec3_splat(2.2));
-        vec3 sunC = mix(vec3((1.0 - sunH) * 0.5 + sunH, sunH, sunH * sunH) * sunH, linFogC, rain);
-        vec3 moonC = mix(vec3(moonH * 0.03, moonH * 0.06, moonH * 0.1) * moonH, linFogC, rain);
-        vec3 horC = cSatur(moonC + sunC, 0.5);
-        vec3 zenC = mix(vec3(0.0, sunH * 0.05 + 0.001, sunH * 0.5 + 0.004), linFogC, rain);
-
-        // ambient - diffuse
-        outCol *= (vec3_splat(0.01) + (cSatur(zenC, 0.3) * (2.0 - rain * 1.5) * ear.b) + vec3(1.0, 0.6, 0.3) * ((ear.g * ear.g) * 0.2 + pow(ear.g, 16.0) * 5.0) + (moonC + sunC) * lVis * 2.0);
-        // near fog
-        outCol = mix(outCol, zenC * (3.0 - sunH * 0.5), 1.0 - exp(-saturate(length(-wPos.xyz) * 0.01) * max(0.05 - sunH * 0.02, rain * 0.1) * CameraLightIntensity.y));
-
-        vec3 bFogC = mix(zenC, horC, exp(-saturate(nWP.y) * 2.0) * 0.1) + (sunC * getMie(sunP, nWP) * 4.0) + (moonC * getMie(moonP, nWP));
-
+        bld.lVis = shLight(ld, bvd, bld, ear.r < 1.0);
+        outCol *= ambDiff(bld);
+        outCol = nearFog(outCol, bld, bvd);
+        vec3 bFogC = borderFog(bld, bvd);
+        float dithering = interleavedGradientNoise(gl_FragCoord.xy);
         if(sDepth >= 1.0){
-            bFogC += normalize(sunC) * smoothstep(0.997, 0.999, dot(nWP, sunP)) * 5.0 * saturate(nWP.y);
-            bFogC += normalize(moonC) * smoothstep(0.996, 0.998, dot(nWP, moonP)) * 5.0 * saturate(nWP.y);
-        #if 1
-            float tBSAng = mod((sunP.x - sunP.y * 0.5) * 3600.0, 3600.0) * 0.1;
-            vec2 cloudP = (nWP.xz / nWP.y) * 0.7;
-                cloudP -= cloudP * Bayer64(gl_FragCoord.xy) * 0.05;
-            float sDens = 1.8;
-            vec3 cloDirC = horC * (1.0 + (getMie1(sunP, nWP) + getMie1(moonP, nWP)));
-            vec3 cloAmbC = cSatur(zenC, 0.7);
-            for(int i = 0; i < 10; i++, cloudP -= cloudP * 0.045){
-                cloDirC = mix(cloDirC, cloAmbC, 0.2);
-                bFogC = mix(bFogC, cloDirC, fbm(cloudP, sDens, tBSAng) * smoothstep(0.0, 0.5, nWP.y));
-                sDens += (i <= 6) ? -0.1 : 0.1;
-            }
-        #endif
+            smVis(bFogC, bld, bvd);
+            cloudMap(bFogC, bld, bvd, dithering * 0.05);
         }
-
-        float bFogD = calculateFogIntensity(length(wPos.xyz), FogAndDistanceControl.z, FogAndDistanceControl.x, FogAndDistanceControl.y);
+        float bFogD = calcBFog(length(bvd.wPos), FogAndDistanceControl.z, FogAndDistanceControl.x, FogAndDistanceControl.y);
         outCol = mix(outCol, bFogC, bFogD);
-    #if 1
-        vec4 sunProj = mul(u_proj, vec4(mul(u_view, vec4(ld.worldSpaceDirection.xyz, 1.0)).xyz, 1.0));
-            sunProj /= sunProj.w;
-            sunProj.y *= -1.0;
-        vec2 sunScr = (sunProj.xy / sunProj.z) * 0.5 + 0.5;
-        vec2 rayDir = (sunScr - v_texcoord0) * 0.05;
-        vec2 rayOri = v_texcoord0 + rayDir * Bayer64(gl_FragCoord.xy);
-        float godRays = 0.0;
-        for(int i = 0; i < 16; i++, rayOri += rayDir) godRays += step(1.0, texture2D(s_SceneDepth, rayOri).r) * cdist(rayOri) * 0.025;
-        outCol += sunC * godRays * getMie1(sunP, nWP) + moonC * 2.0 * godRays * getMie1(moonP, nWP);
-    #endif
-        outCol *= vec3(2.0, 1.9, 1.8);
-        outCol *= (1.0 - (sunH + moonH) * 0.8);
+        ssGR(outCol, bld, bvd, uv, dithering);
+        outCol *= vec3(2.0, 1.9, 1.8) * (1.0 - (bld.sunVis + bld.moonVis) * 0.8 * CameraLightIntensity.y);
     } else {
-        outCol *= (vec3_splat(0.03) + vec3(1.0, 0.6, 0.3) * ((ear.g * ear.g) * 0.2 + pow(ear.g, 16.0) * 5.0));
+        outCol *= (vec3_splat(0.03) + vec3(1.0, 0.6, 0.3) * ((bld.lmCX * bld.lmCX) * 0.2 + pow(bld.lmCX, 16.0) * 5.0));
+        float bFogD = calcBFog(length(bvd.wPos), FogAndDistanceControl.z, FogAndDistanceControl.x, FogAndDistanceControl.y);
+        outCol = mix(outCol, bld.linFogC, bFogD);
     }
 
     gl_FragColor = vec4(max(vec3_splat(0.0), outCol * 1000.0), 1.0);

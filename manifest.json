@@ -5,7 +5,7 @@
         "description": "A shader for Minecraft: Bedrock Edition",
         "uuid": "91fc9799-dfac-46d7-8c1b-482de2040663",
         "version": [1, 0, 1],
-        "min_engine_version": [1, 20, 40]
+        "min_engine_version": [1, 20, 30]
     },
     "modules": [
         {
